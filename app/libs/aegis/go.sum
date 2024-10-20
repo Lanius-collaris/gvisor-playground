@@ -1,0 +1,10 @@
+github.com/google/btree v1.1.2 h1:xf4v41cLI2Z6FxbKm+8Bu+m8ifhj15JuZ9sa0jZCMUU=
+github.com/google/btree v1.1.2/go.mod h1:qOPhT0dTNdNzV6Z/lhRX0YXUafgPLFUh+gZMl761Gm4=
+github.com/opencoff/go-sieve v0.2.1 h1:5Pv6rd3zRquNmXcYHFndjVoolTgcv0ua2XTdMQ+gw0M=
+github.com/opencoff/go-sieve v0.2.1/go.mod h1:CndxLpW4R8fDq04XfBSCOZ+qWwDCcxjfUJbr0GPqWHY=
+golang.org/x/sys v0.13.0 h1:Af8nKPmuFypiUBjVoU9V20FiaFXOcuZI21p0ycVYYGE=
+golang.org/x/sys v0.13.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/time v0.3.0 h1:rg5rLMjNzMS1RkNLzCG38eapWhnYLFYXDXj2gOlr8j4=
+golang.org/x/time v0.3.0/go.mod h1:tRJNPiyCQ0inRvYxbN9jk5I+vvW/OXSQhTDSoE431IQ=
+gvisor.dev/gvisor v0.0.0-20231023213702-2691a8f9b1cf h1:0A28IFBR6VcMacM0m6Rn5/nr8pk8xa2TyIkjSaFAOPc=
+gvisor.dev/gvisor v0.0.0-20231023213702-2691a8f9b1cf/go.mod h1:8hmigyCdYtw5xJGfQDJzSH5Ju8XEIDBnpyi8+O6GRt8=
