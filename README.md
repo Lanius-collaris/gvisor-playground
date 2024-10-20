@@ -1,6 +1,9 @@
-
 ## Status
 WIP
+
+TODO:
+- [ ] Implement client-side evasion
+- [ ] Android UI
 ## How to run demo_cli
 In the first terminal
 ```
