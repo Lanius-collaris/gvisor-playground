@@ -10,6 +10,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+	"gvisor.dev/gvisor/pkg/waiter"
+	"time"
 )
 
 func NewStack() *stack.Stack {
@@ -68,4 +70,32 @@ func CreateNIC(s *stack.Stack, id tcpip.NICID, ep stack.LinkEndpoint) error {
 	}
 
 	return nil
+}
+
+func ReadFromEP(buf []byte, ep tcpip.Endpoint, wq *waiter.Queue, deadCh <-chan time.Time) (tcpip.ReadResult, error) {
+	w := tcpip.SliceWriter(buf)
+	opt := tcpip.ReadOptions{
+		NeedRemoteAddr: true,
+	}
+	res, gErr := ep.Read(&w, opt)
+	if gErr == nil {
+		return res, nil
+	}
+
+	if _, ok := gErr.(*tcpip.ErrWouldBlock); ok {
+		waitEntry, notifyCh := waiter.NewChannelEntry(waiter.ReadableEvents)
+		wq.EventRegister(&waitEntry)
+		defer wq.EventUnregister(&waitEntry)
+		select {
+		case <-deadCh:
+			return res, fmt.Errorf("tcpip.Endpoint.Read(): i/o timeout")
+		case <-notifyCh:
+		}
+		res, gErr = ep.Read(&w, opt)
+	}
+
+	if gErr != nil {
+		return res, fmt.Errorf("tcpip.Endpoint.Read(): %v", gErr)
+	}
+	return res, nil
 }

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:scrollbarAlwaysDrawVerticalTrack="true"
+    android:background="?colorSurface">
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    tools:context=".MainActivity"
+    android:theme="@style/Theme.MyApp">
+
+    <com.google.android.material.textfield.TextInputLayout android:layout_height="wrap_content"
+        android:layout_width="match_parent"
+        android:layout_margin="20sp"
+        style="?attr/textInputFilledStyle"
+        android:hint="@string/label_conf"
+        app:errorEnabled="true"
+        android:id="@+id/input">
+        <com.google.android.material.textfield.TextInputEditText
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="1\n2\n3\n4\n5"
+            android:inputType="textMultiLine|textNoSuggestions"/>
+    </com.google.android.material.textfield.TextInputLayout>
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="20sp">
+    <com.google.android.material.button.MaterialButton
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/save"
+        android:layout_marginEnd="10sp"
+        android:minWidth="150dp"
+        android:id="@+id/btn_save"/>
+        <com.google.android.material.button.MaterialButton
+            android:layout_height="wrap_content"
+            android:layout_width="wrap_content"
+            android:id="@+id/btn_log"
+            android:text="@string/enable_logging"
+            android:visibility="gone"/>
+    </LinearLayout>
+
+    <com.google.android.material.materialswitch.MaterialSwitch
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="20sp"
+        android:text="@string/vpn_service"
+        android:id="@+id/vpn_switch"/>
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:id="@+id/warning"
+        android:layout_margin="20sp"
+        android:textSize="19sp"
+        android:text="@string/zerocopy_warning"
+        android:textColor="@color/design_default_color_error"/>
+</LinearLayout>
+</ScrollView>

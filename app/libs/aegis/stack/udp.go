@@ -1,7 +1,6 @@
 package stack
 
 import (
-	"localhost/aegis/utils"
 	"encoding/binary"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -10,6 +9,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
+	"localhost/aegis/utils"
 	"log"
 	"net"
 	"sync"
@@ -85,6 +85,17 @@ func UDP4Checksum(srcIP []byte, dstIP []byte, p []byte) uint16 {
 	return 0xffff - uint16(utils.ClearHigh16(t))
 }
 
+func writeView(ep stack.LinkWriter, view *buffer.View) (int, tcpip.Error) {
+	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+		ReserveHeaderBytes: 0,
+		Payload:            buffer.MakeWithView(view),
+	})
+	var pktList stack.PacketBufferList
+	pktList.PushBack(pkt)
+	defer pktList.DecRef()
+
+	return ep.WritePackets(pktList)
+}
 func mySendUDP6(ep stack.LinkWriter, data []byte, src *net.UDPAddr, dst IPPort) (int, tcpip.Error) {
 	view := buffer.NewViewSize(48 + len(data))
 	ref1 := view.AsSlice()
@@ -102,16 +113,7 @@ func mySendUDP6(ep stack.LinkWriter, data []byte, src *net.UDPAddr, dst IPPort) 
 	udph.SetLength(uint16(8 + len(data)))
 	chksum := UDP6Checksum(src.IP, dst.IP.AsSlice(), ref1[40:])
 	udph.SetChecksum(chksum)
-
-	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-		ReserveHeaderBytes: 0,
-		Payload:            buffer.MakeWithView(view),
-	})
-	var pktList stack.PacketBufferList
-	pktList.PushBack(pkt)
-	defer pktList.DecRef()
-
-	return ep.WritePackets(pktList)
+	return writeView(ep, view)
 }
 func mySendUDP4(ep stack.LinkWriter, data []byte, src *net.UDPAddr, dst IPPort) (int, tcpip.Error) {
 	view := buffer.NewViewSize(28 + len(data))
@@ -132,16 +134,7 @@ func mySendUDP4(ep stack.LinkWriter, data []byte, src *net.UDPAddr, dst IPPort) 
 	udph.SetLength(uint16(8 + len(data)))
 	chksum = UDP4Checksum(src.IP, dst.IP.AsSlice(), ref1[20:])
 	udph.SetChecksum(chksum)
-
-	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-		ReserveHeaderBytes: 0,
-		Payload:            buffer.MakeWithView(view),
-	})
-	var pktList stack.PacketBufferList
-	pktList.PushBack(pkt)
-	defer pktList.DecRef()
-
-	return ep.WritePackets(pktList)
+	return writeView(ep, view)
 }
 func ForwardInboundUDP(
 	ep stack.LinkWriter,
@@ -188,7 +181,7 @@ func ForwardInboundUDP(
 	delete(nat.State, dst)
 	nat.Unlock()
 
-	log.Printf("ForwardInboundUDP() return, dst: %v",dst)
+	log.Printf("ForwardInboundUDP() return, dst: %v", dst)
 }
 func NewUDPReqHandler(
 	s *stack.Stack,
@@ -208,7 +201,7 @@ func NewUDPReqHandler(
 			log.Printf("failed to create endpoint: %v", gErr)
 			return
 		}
-		xConn := gonet.NewUDPConn(s,&wq, ep)
+		xConn := gonet.NewUDPConn(s, &wq, ep)
 
 		if reqID.LocalPort == 53 {
 			timeout2 = DNSTimeout
@@ -236,7 +229,7 @@ func NewUDPReqHandler(
 				return
 			}
 
-			state = &UDPConnState{LastSend: time.Now(),Conn: rConn}
+			state = &UDPConnState{LastSend: time.Now(), Conn: rConn}
 			go ForwardInboundUDP(linkEP, nat, src, state, timeout2)
 			nat.Lock()
 			nat.State[src] = state
@@ -284,7 +277,7 @@ func NewUDPReqHandler(
 
 			myWG.Wait()
 
-			log.Printf("myWG.Wait() return, reqID: %v",reqID)
+			log.Printf("myWG.Wait() return, reqID: %v", reqID)
 		}()
 	}
 	return h

@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Spider</string>
+    <string name="label_conf">Config in JSON</string>
+    <string name="save">Save</string>
+    <string name="vpn_service">VPN Service</string>
+    <string name="zerocopy_warning">\"overwrite\" stragtegy may not work.</string>
+    <string name="notification_content">Spider started a VPNService.</string>
+    <string name="enable_logging">Enable logging</string>
+</resources>

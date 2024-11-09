@@ -1,0 +1,13 @@
+{
+  "mtu":1500,
+  "strategy":"tlsfrag",
+  "tlsFrag":{
+    "size":1
+  },
+  "overwrite":{
+    "payload":"UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBhDQpDb250ZW50LUxlbmd0aDogOTk5OTk5DQoNCg==",
+    "maxTTL":20
+  },
+  "DoHURL":"https://[2620:fe::9]/dns-query",
+  "DoHIP":"2620:fe::9"
+}

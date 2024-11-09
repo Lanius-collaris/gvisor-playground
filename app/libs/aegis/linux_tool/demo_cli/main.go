@@ -1,21 +1,41 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+	"localhost/aegis/dialers"
 	"localhost/aegis/stack"
 	"localhost/aegis/utils"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"syscall"
 	"time"
 )
+
+type TLSFragOption struct {
+	Size uint16 `json:"size"`
+}
+type OverwriteOption struct {
+	Payload string `json:"payload"` //base64
+	MaxTTL  uint8  `json:"maxTTL"`
+}
+type Config struct {
+	MTU       int32           `json:"mtu"`
+	Strategy  string          `json:"strategy"`
+	TLSFrag   TLSFragOption   `json:"tlsFrag"`
+	Overwrite OverwriteOption `json:"overwrite"`
+	DoHURL    string
+	DoHIP     string
+}
 
 func p(e error) {
 	if e != nil {
@@ -48,7 +68,7 @@ func sendTUN(name string) {
 	err = syscall.Sendmsg(sock, msg[:], cmsg, nil, 0)
 	p(err)
 }
-func demo(targetPid int, tunName string) {
+func demo(targetPid int, tunName string, config *Config) {
 	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_SEQPACKET, 0)
 	p(err)
 	defer func() {
@@ -64,8 +84,10 @@ func demo(targetPid int, tunName string) {
 	c1.ExtraFiles = []*os.File{os.NewFile(uintptr(pair[1]), "")}
 	fmt.Println("starting child...")
 	output, err := c1.CombinedOutput()
+	if len(output) > 0 {
+		fmt.Printf("child's output:\n%s\n", string(output))
+	}
 	p(err)
-	fmt.Printf("child's output:\n%s\n", string(output))
 
 	var buf [4]byte
 	var cmsgBuf [20]byte
@@ -79,16 +101,52 @@ func demo(targetPid int, tunName string) {
 	netStack := stack.NewStack()
 	defer netStack.Destroy()
 
-	tcpHandler := stack.NewTCPReqHandler(dialTCP)
-	tcpForwarder := tcp.NewForwarder(netStack, 0, 64, tcpHandler)
+	var tcpfn stack.DialTCPFn
+	switch config.Strategy {
+	case "tlsfrag":
+		tcpfn = func(dstIP tcpip.Address, dstPort uint16) (stack.TCPLike, error) {
+			dst := net.TCPAddr{
+				IP:   dstIP.AsSlice(),
+				Port: int(dstPort),
+			}
+			tcpConn, err := net.DialTCP("tcp", nil, &dst)
+			if err != nil {
+				return nil, err
+			}
+			return &dialers.TLSFragConn{tcpConn, config.TLSFrag.Size, false}, nil
+		}
+	case "overwrite":
+		payload, err := base64.StdEncoding.DecodeString(config.Overwrite.Payload)
+		if err != nil {
+			fmt.Printf("decode error: %v, use default payload\n", err)
+			payload = []byte(dialers.HTTP1_1Str)
+		}
+		tcpfn = func(dstIP tcpip.Address, dstPort uint16) (stack.TCPLike, error) {
+			t1, _ := netip.AddrFromSlice(dstIP.AsSlice())
+			if t1.IsPrivate() {
+				return dialTCP(dstIP, dstPort)
+			}
+			return dialers.OverwriteDial1(
+				netip.AddrPortFrom(t1, dstPort),
+				int(config.Overwrite.MaxTTL),
+				payload)
+		}
+	default:
+		tcpfn = dialTCP
+	}
+
+	tcpHandler := stack.NewTCPReqHandler(tcpfn)
+	tcpForwarder := tcp.NewForwarder(netStack, 0, 10000, tcpHandler)
 	netStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
 	udpNAT := stack.NewUDPNAT()
 	linkEP, err := stack.NewLinkEP(int32(tun), mtu)
 	p(err)
-	udpHandler := stack.NewUDPReqHandler(netStack,linkEP, udpNAT, listenUDP, nil, stack.DefaultReadTimeout)
+	udpHandler := stack.NewUDPReqHandler(netStack, linkEP, udpNAT, listenUDP, nil, stack.DefaultReadTimeout)
 	udpForwarder := udp.NewForwarder(netStack, udpHandler)
 	netStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+
+	stack.DropICMP(netStack)
 
 	err = stack.CreateNIC(netStack, 1, linkEP)
 	p(err)
@@ -105,13 +163,26 @@ func main() {
 	flag.StringVar(&tunName, "tun", "tun0", "")
 	var pid int
 	flag.IntVar(&pid, "target", -1, "target process to get namespaces from")
+	var configPath string
+	flag.StringVar(&configPath, "config", "config.json", "path to configuration file")
 	flag.Parse()
 
 	log.SetFlags(log.Lshortfile)
 
 	switch mode {
 	case "main":
-		demo(pid, tunName)
+		config := Config{
+			Strategy: "none",
+		}
+		data, err := os.ReadFile(configPath)
+		if err == nil {
+			err = json.Unmarshal(data, &config)
+			if err != nil {
+				fmt.Printf("decode error: %v\n", err)
+			}
+		}
+		fmt.Printf("config: %v\n", &config)
+		demo(pid, tunName, &config)
 	case "sendfd":
 		sendTUN(tunName)
 	default:
