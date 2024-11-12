@@ -100,6 +100,7 @@ class MainActivity : AppCompatActivity(), AdapterView.OnItemSelectedListener {
             }
         spinner.onItemSelectedListener = this
         spinner.setSelection(0)
+        (spinner.getChildAt(0) as TextView?)?.setTextColor(ContextCompat.getColor(this,R.color.on_surface_alt))
     }
 
     private fun start() {

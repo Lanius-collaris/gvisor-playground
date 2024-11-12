@@ -6,7 +6,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:scrollbarAlwaysDrawVerticalTrack="true"
-    android:background="?colorSurface">
+    android:background="@color/surface_alt">
 <LinearLayout
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
@@ -21,6 +21,7 @@
         android:layout_marginStart="20sp"
         android:labelFor="@id/conf_spinner"
         android:text="@string/custom"
+        android:textColor="@color/on_surface_alt"
         android:textAppearance="@style/TextAppearance.AppCompat.Medium" />
     <Spinner
         android:layout_width="match_parent"
