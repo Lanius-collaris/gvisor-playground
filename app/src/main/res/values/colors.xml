@@ -9,4 +9,5 @@
     <color name="white">#FFFFFFFF</color>
     <color name="background">#FA7</color>
     <color name="foreground">#000</color>
+     <color name="surface_alt">#fef7ff</color>
 </resources>
