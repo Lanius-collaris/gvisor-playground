@@ -20,6 +20,33 @@ object Manager {
   "DoHURL":"https://[2620:fe::9]/dns-query",
   "DoHIP":"2620:fe::9"
 }"""
+    val CONF_PRESET= arrayListOf("",
+        """{
+  "mtu":0,
+  "strategy":"tlsfrag",
+  "tlsFrag":{
+    "size":1
+  },
+  "overwrite":{
+    "payload":"UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBhDQpDb250ZW50LUxlbmd0aDogOTk5OTk5DQoNCg==",
+    "maxTTL":20
+  },
+  "DoHURL":"https://9.9.9.12/dns-query",
+  "DoHIP":"9.9.9.12"
+}""",
+        """{
+  "mtu":0,
+  "strategy":"overwrite",
+  "tlsFrag":{
+    "size":1
+  },
+  "overwrite":{
+    "payload":"UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBhDQpDb250ZW50LUxlbmd0aDogOTk5OTk5DQoNCg==",
+    "maxTTL":20
+  },
+  "DoHURL":"https://9.9.9.12/dns-query",
+  "DoHIP":"9.9.9.12"
+}""")
     fun startVPN(context: Context, conf:String){
         val mIntent=Intent(context, VPNService::class.java)
         mIntent.action = VPNService.START_ACTION

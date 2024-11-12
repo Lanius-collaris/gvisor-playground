@@ -21,16 +21,23 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.view.MotionEvent
+import android.view.View
 import android.view.inputmethod.InputMethodManager
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.core.view.isVisible
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), AdapterView.OnItemSelectedListener {
     private var mPref: SharedPreferences? = null
     private var mInput: TextInputLayout? = null
     private var mEditText: EditText? = null
     private var mSwitch: MaterialSwitch? = null
     private var debugButton: MaterialButton? = null
+    private var txt = ""
+    private var spinnerInit = false
+    private var lastPos = 0
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             mSwitch?.isChecked = VPNStatus == Status.ON
@@ -47,7 +54,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        //Model(findViewById(R.id.input), findViewById(R.id.btn_save), findViewById(R.id.vpn_switch))
         mPref = getPreferences(Context.MODE_PRIVATE)
         mInput = findViewById(R.id.input)
         mEditText = mInput?.editText
@@ -82,9 +88,18 @@ class MainActivity : AppCompatActivity() {
                 Manager.stopVPN(this)
             }
         }
-        findViewById<TextView>(R.id.warning).isVisible=Manager.dontUseZeroCopy()
-        debugButton=findViewById(R.id.btn_log)
+        findViewById<TextView>(R.id.warning).isVisible = Manager.dontUseZeroCopy()
+        debugButton = findViewById(R.id.btn_log)
         debugButton?.setOnClickListener { aegis.dontLog(false) }
+
+        val spinner: Spinner = findViewById(R.id.conf_spinner)
+        ArrayAdapter.createFromResource(this, R.array.spinner, android.R.layout.simple_spinner_item)
+            .also {
+                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                spinner.adapter = it
+            }
+        spinner.onItemSelectedListener = this
+        spinner.setSelection(0)
     }
 
     private fun start() {
@@ -114,6 +129,7 @@ class MainActivity : AppCompatActivity() {
             putString("conf", c)
             apply()
         }
+        txt = c
     }
 
     override fun onResume() {
@@ -127,18 +143,37 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
-        if(ev?.action == MotionEvent.ACTION_DOWN){
-            val v=currentFocus
-            if(v is EditText){
-                val outRect= Rect()
+        if (ev?.action == MotionEvent.ACTION_DOWN) {
+            val v = currentFocus
+            if (v is EditText) {
+                val outRect = Rect()
                 v.getGlobalVisibleRect(outRect)
-                if(!outRect.contains(ev.rawX.toInt(), ev.rawY.toInt())){
+                if (!outRect.contains(ev.rawX.toInt(), ev.rawY.toInt())) {
                     v.clearFocus()
-                    val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                    imm.hideSoftInputFromWindow(v.windowToken,0)
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.hideSoftInputFromWindow(v.windowToken, 0)
                 }
             }
         }
         return super.dispatchTouchEvent(ev)
     }
+
+    override fun onItemSelected(parent: AdapterView<*>?, v: View?, pos: Int, p3: Long) {
+        if (pos == 0) {
+            if (spinnerInit) {
+                mEditText?.setText(txt)
+            } else {
+                spinnerInit = true
+            }
+            lastPos = 0
+        } else {
+            if (lastPos == 0) {
+                txt = mEditText?.text.toString()
+            }
+            mEditText?.setText(Manager.CONF_PRESET[pos])
+            lastPos = pos
+        }
+    }
+
+    override fun onNothingSelected(p0: AdapterView<*>?) {}
 }

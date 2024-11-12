@@ -6,4 +6,5 @@
     <string name="zerocopy_warning">\"overwrite\" stragtegy may not work.</string>
     <string name="notification_content">Spider started a VPNService.</string>
     <string name="enable_logging">Enable logging</string>
+    <string name="custom">select configuration</string>
 </resources>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="label_conf">配置（JSON格式）</string>
+    <string name="save">保存</string>
+    <string name="vpn_service">VPN服务</string>
+    <string name="zerocopy_warning">\"overwrite\" 策略可能不工作</string>
+    <string name="notification_content">Spider 启动了VPN服务</string>
+    <string name="enable_logging">开启日志</string>
+    <string name="custom">选择配置</string>
+</resources>
