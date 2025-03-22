@@ -1,6 +1,8 @@
 package stack
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -10,8 +12,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
-	"gvisor.dev/gvisor/pkg/waiter"
-	"time"
+	"net"
 )
 
 func NewStack() *stack.Stack {
@@ -72,7 +73,31 @@ func CreateNIC(s *stack.Stack, id tcpip.NICID, ep stack.LinkEndpoint) error {
 	return nil
 }
 
-func ReadFromEP(buf []byte, ep tcpip.Endpoint, wq *waiter.Queue, deadCh <-chan time.Time) (tcpip.ReadResult, error) {
+func FullToUDPAddr(addr tcpip.FullAddress) net.UDPAddr {
+	return net.UDPAddr{
+		IP:   addr.Addr.AsSlice(),
+		Port: int(addr.Port),
+	}
+}
+func GenerateErrForEP(ep tcpip.Endpoint, op string, gErr tcpip.Error) error {
+	FinalErr := net.OpError{
+		Op:  op,
+		Net: "tcpip.Endpoint",
+		Err: errors.New(gErr.String()),
+	}
+	addr, err := ep.GetLocalAddress()
+	if err == nil {
+		t := FullToUDPAddr(addr)
+		FinalErr.Source = &t
+	}
+	addr, err = ep.GetRemoteAddress()
+	if err == nil {
+		t := FullToUDPAddr(addr)
+		FinalErr.Addr = &t
+	}
+	return &FinalErr
+}
+func ReadFromEP(buf []byte, ep tcpip.Endpoint) (tcpip.ReadResult, error) {
 	w := tcpip.SliceWriter(buf)
 	opt := tcpip.ReadOptions{
 		NeedRemoteAddr: true,
@@ -81,21 +106,25 @@ func ReadFromEP(buf []byte, ep tcpip.Endpoint, wq *waiter.Queue, deadCh <-chan t
 	if gErr == nil {
 		return res, nil
 	}
-
-	if _, ok := gErr.(*tcpip.ErrWouldBlock); ok {
-		waitEntry, notifyCh := waiter.NewChannelEntry(waiter.ReadableEvents)
-		wq.EventRegister(&waitEntry)
-		defer wq.EventUnregister(&waitEntry)
-		select {
-		case <-deadCh:
-			return res, fmt.Errorf("tcpip.Endpoint.Read(): i/o timeout")
-		case <-notifyCh:
+	return res, GenerateErrForEP(ep, "read", gErr)
+}
+func WriteToEP(buf []byte, opt tcpip.WriteOptions, ep tcpip.Endpoint, writableCh <-chan struct{}) (int, error) {
+	var (
+		r       bytes.Reader
+		written int = 0
+	)
+	for written < len(buf) {
+		r.Reset(buf[written:])
+		n, gErr := ep.Write(&r, opt)
+		written += int(n)
+		if gErr != nil {
+			switch gErr.(type) {
+			case *tcpip.ErrWouldBlock:
+				<-writableCh
+			default:
+				return written, GenerateErrForEP(ep, "write", gErr)
+			}
 		}
-		res, gErr = ep.Read(&w, opt)
 	}
-
-	if gErr != nil {
-		return res, fmt.Errorf("tcpip.Endpoint.Read(): %v", gErr)
-	}
-	return res, nil
+	return written, nil
 }

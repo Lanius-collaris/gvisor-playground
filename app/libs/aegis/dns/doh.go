@@ -1,4 +1,4 @@
-package android_interface
+package dns
 
 import (
 	"bytes"

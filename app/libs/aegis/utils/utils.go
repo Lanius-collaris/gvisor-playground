@@ -2,18 +2,25 @@ package utils
 
 import (
 	"encoding/binary"
+	"io"
+	"net"
+	"os"
 	"syscall"
+	"time"
 	"unsafe"
 )
+
+const SO_EE_ORIGIN_ICMP = 2
+const SO_EE_ORIGIN_ICMP6 = 3
 
 func ToNumber(e error) syscall.Errno {
 	cause := e
 	for {
 		if unwrap, ok := cause.(interface{ Unwrap() error }); ok {
 			cause = unwrap.Unwrap()
-			continue
+		} else {
+			break
 		}
-		break
 	}
 	n, ok := cause.(syscall.Errno)
 	if ok {
@@ -61,6 +68,85 @@ func GenFDCmsg(fds []uint32) []byte {
 		offset += 4
 	}
 	return cmsg
+}
+
+func IsReadable(raw syscall.RawConn, deadline time.Time) bool {
+	t := 0
+	raw.Read(func(fd uintptr) bool {
+		if t == 0 {
+			t += 1
+			return false
+		} else {
+			return true
+		}
+	})
+	if time.Now().Sub(deadline) < 0 {
+		return true
+	} else {
+		return false
+	}
+}
+
+type MyTCPConn struct {
+	*net.TCPConn
+	Raw syscall.RawConn
+}
+
+func TCPConnToMyTCPConn(tcpConn *net.TCPConn) MyTCPConn {
+	raw, _ := tcpConn.SyscallConn()
+	return MyTCPConn{tcpConn, raw}
+}
+func (conn *MyTCPConn) IsReadable(deadline time.Time) bool {
+	return IsReadable(conn.Raw, deadline)
+}
+func (conn *MyTCPConn) Recvmsg(buf []byte, cmsgBuf []byte, flags int) (n, cmsgLen int, recvflags int, from syscall.Sockaddr, err error) {
+	conn.Raw.Control(func(t uintptr) {
+		n, cmsgLen, recvflags, from, err = syscall.Recvmsg(int(t), buf, cmsgBuf, flags)
+	})
+	if n == 0 {
+		err = &net.OpError{
+			Op:     "read",
+			Net:    "tcp",
+			Source: conn.TCPConn.LocalAddr(),
+			Addr:   conn.TCPConn.RemoteAddr(),
+			Err:    io.EOF,
+		}
+	}
+	return
+}
+func (conn *MyTCPConn) GetsockoptInt(level int, opt int) (int, error) {
+	var (
+		val int
+		err error = nil
+	)
+	conn.Raw.Control(func(fd uintptr) {
+		val, err = syscall.GetsockoptInt(int(fd), level, opt)
+	})
+	return val, err
+}
+
+type MyUDPConn struct {
+	*net.UDPConn
+	Raw syscall.RawConn
+}
+
+func UDPConnToMyUDPConn(udpConn *net.UDPConn) MyUDPConn {
+	raw, _ := udpConn.SyscallConn()
+	return MyUDPConn{udpConn, raw}
+}
+func FdToUDPConn(fd int) MyUDPConn {
+	defer syscall.Close(fd)
+	conn, _ := net.FilePacketConn(os.NewFile(uintptr(fd), ""))
+	return UDPConnToMyUDPConn(conn.(*net.UDPConn))
+}
+func (conn *MyUDPConn) IsReadable(deadline time.Time) bool {
+	return IsReadable(conn.Raw, deadline)
+}
+func (conn *MyUDPConn) Recvmsg(buf []byte, cmsgBuf []byte, flags int) (n, cmsgLen int, recvflags int, from syscall.Sockaddr, err error) {
+	conn.Raw.Control(func(t uintptr) {
+		n, cmsgLen, recvflags, from, err = syscall.Recvmsg(int(t), buf, cmsgBuf, flags)
+	})
+	return
 }
 
 func ClearHigh16(n uint32) uint32 {

@@ -17,8 +17,9 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/signal"
+	"sync"
 	"syscall"
-	"time"
 )
 
 type TLSFragOption struct {
@@ -47,10 +48,20 @@ func dialTCP(dstIP tcpip.Address, dstPort uint16) (stack.TCPLike, error) {
 		IP:   dstIP.AsSlice(),
 		Port: int(dstPort),
 	}
-	return net.DialTCP("tcp", nil, &dst)
+	tcpConn, err := net.DialTCP("tcp", nil, &dst)
+	if err != nil {
+		return nil, err
+	}
+	conn2 := utils.TCPConnToMyTCPConn(tcpConn)
+	return &conn2, nil
 }
-func listenUDP(network string, laddr *net.UDPAddr) (net.PacketConn, error) {
-	return net.ListenUDP(network, laddr)
+func listenUDP(network string, laddr *net.UDPAddr) (stack.UDPLike, error) {
+	udpConn, err := net.ListenUDP(network, laddr)
+	if err != nil {
+		return nil, err
+	}
+	conn2 := utils.UDPConnToMyUDPConn(udpConn)
+	return &conn2, nil
 }
 func sendTUN(name string) {
 	sock := int(3)
@@ -79,7 +90,8 @@ func demo(targetPid int, tunName string, config *Config) {
 
 	elfPath, err := os.Executable()
 	p(err)
-	c1 := exec.Command("/usr/bin/nsenter", "--target", fmt.Sprintf("%d", targetPid), "--user", "--net", "--preserve-credentials",
+	c1 := exec.Command("/usr/bin/nsenter", "--target", fmt.Sprintf("%d", targetPid), "--user", "--net",
+		"--preserve-credentials", "--keep-caps",
 		elfPath, "-mode", "sendfd", "-tun", tunName)
 	c1.ExtraFiles = []*os.File{os.NewFile(uintptr(pair[1]), "")}
 	fmt.Println("starting child...")
@@ -113,7 +125,8 @@ func demo(targetPid int, tunName string, config *Config) {
 			if err != nil {
 				return nil, err
 			}
-			return &dialers.TLSFragConn{tcpConn, config.TLSFrag.Size, false}, nil
+			conn2 := utils.TCPConnToMyTCPConn(tcpConn)
+			return &dialers.TLSFragConn{conn2, config.TLSFrag.Size, false}, nil
 		}
 	case "overwrite":
 		payload, err := base64.StdEncoding.DecodeString(config.Overwrite.Payload)
@@ -135,25 +148,35 @@ func demo(targetPid int, tunName string, config *Config) {
 		tcpfn = dialTCP
 	}
 
-	tcpHandler := stack.NewTCPReqHandler(tcpfn)
+	bufPool := sync.Pool{
+		New: func() any {
+			return make([]byte, 65536)
+		},
+	}
+	for i := 0; i < 8; i++ {
+		bufPool.Put(make([]byte, 65536))
+	}
+
+	tcpHandler := stack.NewTCPReqHandler(tcpfn, &bufPool)
 	tcpForwarder := tcp.NewForwarder(netStack, 0, 10000, tcpHandler)
 	netStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
-	udpNAT := stack.NewUDPNAT()
+	udpNAT := stack.NewUDPNAT(&bufPool)
 	linkEP, err := stack.NewLinkEP(int32(tun), mtu)
 	p(err)
 	udpHandler := stack.NewUDPReqHandler(netStack, linkEP, udpNAT, listenUDP, nil, stack.DefaultReadTimeout)
 	udpForwarder := udp.NewForwarder(netStack, udpHandler)
 	netStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
 
-	stack.DropICMP(netStack)
+	stack.DropICMP(netStack, &stack.ICMPHackTarget{})
 
 	err = stack.CreateNIC(netStack, 1, linkEP)
 	p(err)
 
-	for {
-		time.Sleep(time.Hour)
-	}
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	wait1 := <-ch
+	fmt.Printf("received %v signal, exiting\n", wait1)
 }
 
 func main() {

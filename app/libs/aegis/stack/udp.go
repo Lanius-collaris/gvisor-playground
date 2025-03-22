@@ -13,55 +13,44 @@ import (
 	"log"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 )
 
 const DefaultReadTimeout = 240 * time.Second
 const DNSTimeout = 10 * time.Second
 
-var IPv6HeaderForUDP = [40]byte{
-	0x60, 0, 0, 0,
-	0, 0, 17, 64,
-	0, 0, 0, 0,
-	0, 0, 0, 0,
-	0, 0, 0, 0,
-	0, 0, 0, 0,
-	0, 0, 0, 0,
-	0, 0, 0, 0,
-	0, 0, 0, 0,
-	0, 0, 0, 0,
-}
-var IPv4HeaderForUDP = [20]byte{
-	0x45, 0, 0, 0,
-	0, 0, 0, 0,
-	64, 17, 0, 0,
-	0, 0, 0, 0,
-	0, 0, 0, 0,
-}
-
 type IPPort struct {
 	IP   tcpip.Address
 	Port uint16
 }
+type UDPLike interface {
+	net.Conn
+	IsReadable(deadline time.Time) bool
+	Recvmsg(buf []byte, cmsgBuf []byte, flags int) (n, cmsgLen int, recvflags int, from syscall.Sockaddr, err error)
+	WriteMsgUDP(b []byte, cmsg []byte, addr *net.UDPAddr) (n, cmsgN int, err error)
+}
 type UDPConnState struct {
 	sync.RWMutex
 	WG       sync.WaitGroup
-	Conn     net.PacketConn
+	Conn     UDPLike
 	LastSend time.Time
 }
 type NAT struct {
 	sync.RWMutex
-	State map[IPPort]*UDPConnState
+	State   map[IPPort]*UDPConnState
+	BufPool *sync.Pool
 }
 
-func NewUDPNAT() *NAT {
+func NewUDPNAT(bufPool *sync.Pool) *NAT {
 	return &NAT{
-		State: make(map[IPPort]*UDPConnState),
+		State:   make(map[IPPort]*UDPConnState),
+		BufPool: bufPool,
 	}
 }
 
 // All net.Addr in this file are *net.UDPAddr
-type ListenUDPFn func(network string, laddr *net.UDPAddr) (net.PacketConn, error)
+type ListenUDPFn func(network string, laddr *net.UDPAddr) (UDPLike, error)
 type HijackDNSFn func(packet []byte, conn net.Conn, wg *sync.WaitGroup)
 
 func UDP6Checksum(srcIP []byte, dstIP []byte, p []byte) uint16 {
@@ -84,6 +73,13 @@ func UDP4Checksum(srcIP []byte, dstIP []byte, p []byte) uint16 {
 	t := utils.Uint16Sum(pseudoHeader[:]) + utils.Uint16Sum(p)
 	return 0xffff - uint16(utils.ClearHigh16(t))
 }
+func AddUDPHeader(buf []byte, srcPort uint16, dstPort uint16) header.UDP {
+	udph := header.UDP(buf[:8])
+	udph.SetSourcePort(srcPort)
+	udph.SetDestinationPort(dstPort)
+	udph.SetLength(uint16(len(buf)))
+	return udph
+}
 
 func writeView(ep stack.LinkWriter, view *buffer.View) (int, tcpip.Error) {
 	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
@@ -96,7 +92,7 @@ func writeView(ep stack.LinkWriter, view *buffer.View) (int, tcpip.Error) {
 
 	return ep.WritePackets(pktList)
 }
-func mySendUDP6(ep stack.LinkWriter, data []byte, src *net.UDPAddr, dst IPPort) (int, tcpip.Error) {
+func mySendUDP6(ep stack.LinkWriter, data []byte, src *syscall.SockaddrInet6, dst IPPort) (int, tcpip.Error) {
 	view := buffer.NewViewSize(48 + len(data))
 	ref1 := view.AsSlice()
 	copy(ref1[48:], data)
@@ -104,18 +100,15 @@ func mySendUDP6(ep stack.LinkWriter, data []byte, src *net.UDPAddr, dst IPPort) 
 	copy(ref1[:8], IPv6HeaderForUDP[:8])
 	iph := header.IPv6(ref1[:40])
 	iph.SetPayloadLength(uint16(8 + len(data)))
-	copy(iph[8:24], src.IP)
+	copy(iph[8:24], src.Addr[:])
 	iph.SetDestinationAddress(dst.IP)
 
-	udph := header.UDP(ref1[40:48])
-	udph.SetSourcePort(uint16(src.Port))
-	udph.SetDestinationPort(dst.Port)
-	udph.SetLength(uint16(8 + len(data)))
-	chksum := UDP6Checksum(src.IP, dst.IP.AsSlice(), ref1[40:])
+	udph := AddUDPHeader(ref1[40:], uint16(src.Port), dst.Port)
+	chksum := UDP6Checksum(src.Addr[:], dst.IP.AsSlice(), ref1[40:])
 	udph.SetChecksum(chksum)
 	return writeView(ep, view)
 }
-func mySendUDP4(ep stack.LinkWriter, data []byte, src *net.UDPAddr, dst IPPort) (int, tcpip.Error) {
+func mySendUDP4(ep stack.LinkWriter, data []byte, src *syscall.SockaddrInet4, dst IPPort) (int, tcpip.Error) {
 	view := buffer.NewViewSize(28 + len(data))
 	ref1 := view.AsSlice()
 	copy(ref1[28:], data)
@@ -123,16 +116,13 @@ func mySendUDP4(ep stack.LinkWriter, data []byte, src *net.UDPAddr, dst IPPort) 
 	copy(ref1[:12], IPv4HeaderForUDP[:12])
 	iph := header.IPv4(ref1[:20])
 	iph.SetTotalLength(uint16(28 + len(data)))
-	copy(iph[12:16], src.IP)
+	copy(iph[12:16], src.Addr[:])
 	iph.SetDestinationAddress(dst.IP)
 	chksum := 0xffff - uint16(utils.ClearHigh16(utils.Uint16Sum(iph)))
 	iph.SetChecksum(chksum)
 
-	udph := header.UDP(ref1[20:28])
-	udph.SetSourcePort(uint16(src.Port))
-	udph.SetDestinationPort(dst.Port)
-	udph.SetLength(uint16(8 + len(data)))
-	chksum = UDP4Checksum(src.IP, dst.IP.AsSlice(), ref1[20:])
+	udph := AddUDPHeader(ref1[20:], uint16(src.Port), dst.Port)
+	chksum = UDP4Checksum(src.Addr[:], dst.IP.AsSlice(), ref1[20:])
 	udph.SetChecksum(chksum)
 	return writeView(ep, view)
 }
@@ -146,7 +136,7 @@ func ForwardInboundUDP(
 	defer state.Conn.Close()
 
 	isIPv6 := dst.IP.Len() == 16
-	var buf [65536]byte
+out1:
 	for {
 		now1 := time.Now()
 		state.RLock()
@@ -156,23 +146,40 @@ func ForwardInboundUDP(
 			log.Printf("timeout, delete mapping: %v", dst)
 			break
 		}
-		state.Conn.SetReadDeadline(now1.Add(readTimeout))
-		n, from, err := state.Conn.ReadFrom(buf[:])
-		if err != nil {
-			log.Printf("failed to ReadFrom: %v", err)
-			break
-		}
-		remoteAddr := from.(*net.UDPAddr)
+		deadline := now1.Add(readTimeout)
+		state.Conn.SetReadDeadline(deadline)
 
-		var gErr tcpip.Error
-		if isIPv6 {
-			n, gErr = mySendUDP6(ep, buf[:n], remoteAddr, dst)
-		} else {
-			n, gErr = mySendUDP4(ep, buf[:n], remoteAddr, dst)
+		buf := nat.BufPool.Get().([]byte)
+	in1:
+		for {
+			n, _, _, from, err := state.Conn.Recvmsg(buf, nil, 0)
+			if err != nil {
+				switch utils.ToNumber(err) {
+				case syscall.EAGAIN:
+					break in1
+				default:
+					nat.BufPool.Put(buf)
+					log.Printf("failed to Recvmsg: %v", err)
+					break out1
+				}
+			}
+
+			var gErr tcpip.Error
+			if isIPv6 {
+				n, gErr = mySendUDP6(ep, buf[:n], from.(*syscall.SockaddrInet6), dst)
+			} else {
+				n, gErr = mySendUDP4(ep, buf[:n], from.(*syscall.SockaddrInet4), dst)
+			}
+			if gErr != nil {
+				nat.BufPool.Put(buf)
+				log.Printf("failed to WritePackets: %v", gErr)
+				break out1
+			}
 		}
-		if gErr != nil {
-			log.Printf("failed to WritePackets: %v", gErr)
-			break
+		nat.BufPool.Put(buf)
+
+		if !state.Conn.IsReadable(deadline) {
+			log.Printf("wait for readable events: timeout")
 		}
 	}
 
@@ -247,31 +254,63 @@ func NewUDPReqHandler(
 				IP:   reqID.LocalAddress.AsSlice(),
 				Port: int(reqID.LocalPort),
 			}
-			var buf [65536]byte
 			var myWG sync.WaitGroup
+			readTimer := time.NewTimer(timeout2)
+			defer readTimer.Stop()
+
+			waitEntry, readableCh := waiter.NewChannelEntry(waiter.ReadableEvents)
+			wq.EventRegister(&waitEntry)
+			defer wq.EventUnregister(&waitEntry)
+
+		out1:
 			for {
-				now1 := time.Now()
-				state.Lock()
-				state.LastSend = now1
-				state.Unlock()
-				xConn.SetReadDeadline(now1.Add(timeout2))
-				n, err := xConn.Read(buf[:])
-				if err != nil {
-					log.Printf("failed to read data: %v", err)
-					break
-				}
+				buf := nat.BufPool.Get().([]byte)
+			in1:
+				for {
+					now1 := time.Now()
+					state.Lock()
+					state.LastSend = now1
+					state.Unlock()
 
-				if hijack != nil && dst.Port == 53 {
-					dataCopy := append([]byte{}, buf[:n]...)
-					myWG.Add(1)
-					go hijack(dataCopy, xConn, &myWG)
-					continue
-				}
+					res, err := ReadFromEP(buf[:], ep)
+					if err != nil {
+						switch err.(*net.OpError).Err.Error() {
+						case "operation would block":
+							break in1
+						default:
+							nat.BufPool.Put(buf)
+							log.Printf("failed to read data: %v", err)
+							break out1
+						}
+					}
 
-				_, err = state.Conn.WriteTo(buf[:n], &dst)
-				if err != nil {
-					log.Printf("failed to send data: %v", err)
-					break
+					if hijack != nil && dst.Port == 53 {
+						dataCopy := append([]byte{}, buf[:res.Count]...)
+						myWG.Add(1)
+						go hijack(dataCopy, xConn, &myWG)
+						continue
+					}
+
+					_, _, err = state.Conn.WriteMsgUDP(buf[:res.Count], nil, &dst)
+					if err != nil {
+						nat.BufPool.Put(buf)
+						log.Printf("failed to send data: %v", err)
+						break out1
+					}
+				}
+				nat.BufPool.Put(buf)
+
+				readTimer.Reset(timeout2)
+				select {
+				case <-readableCh:
+				case <-readTimer.C:
+					log.Printf("failed to read data: %v", net.OpError{
+						Op:   "read",
+						Net:  "udp",
+						Addr: &dst,
+						Err:  syscall.ETIMEDOUT,
+					})
+					break out1
 				}
 			}
 

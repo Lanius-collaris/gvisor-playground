@@ -2,7 +2,7 @@ package dialers
 
 import (
 	"encoding/binary"
-	"net"
+	"localhost/aegis/utils"
 )
 
 func IsClientHello(b []byte) bool {
@@ -36,7 +36,7 @@ func FragTLS(record []byte, size uint16) []byte {
 }
 
 type TLSFragConn struct {
-	*net.TCPConn
+	utils.MyTCPConn
 	Size uint16
 	Used bool
 }

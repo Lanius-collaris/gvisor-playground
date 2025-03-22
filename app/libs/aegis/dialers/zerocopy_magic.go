@@ -3,6 +3,7 @@ package dialers
 import (
 	"crypto/rand"
 	"golang.org/x/sys/unix"
+	"localhost/aegis/utils"
 	"localhost/aegis/utils/cache"
 	"log"
 	mathrand "math/rand"
@@ -142,7 +143,7 @@ func GetTTLProbeResult(conn *net.UDPConn, dstIP netip.Addr, basePort int, maxTTL
 }
 
 type OverwriteConn struct {
-	*net.TCPConn
+	utils.MyTCPConn
 	Payload []byte
 	Used    bool
 	TTL     uint8
@@ -151,11 +152,11 @@ type OverwriteConn struct {
 // Inspired by byedpi
 func (conn *OverwriteConn) Write(b []byte) (int, error) {
 	if conn.Used {
-		return conn.TCPConn.Write(b)
+		return conn.MyTCPConn.Write(b)
 	}
 	conn.Used = true
 	if len(b) <= len(conn.Payload) {
-		return conn.TCPConn.Write(b)
+		return conn.MyTCPConn.Write(b)
 	}
 	isIPv6 := conn.RemoteAddr().(*net.TCPAddr).IP.To4() == nil
 	sockFD := GetFDFromTCPConn(conn.TCPConn)
@@ -201,7 +202,7 @@ func (conn *OverwriteConn) Write(b []byte) (int, error) {
 		return n1, err
 	}
 
-	n2, err := conn.TCPConn.Write(b[len(conn.Payload):])
+	n2, err := conn.MyTCPConn.Write(b[len(conn.Payload):])
 	return n1 + n2, err
 }
 func OverwriteDial1(dst netip.AddrPort, maxTTL int, payload []byte) (*OverwriteConn, error) {
@@ -218,7 +219,7 @@ func OverwriteDial1(dst netip.AddrPort, maxTTL int, payload []byte) (*OverwriteC
 		if err != nil {
 			return nil, err
 		}
-		return &OverwriteConn{tcpConn, payloadCopy, false, ttl}, nil
+		return &OverwriteConn{utils.TCPConnToMyTCPConn(tcpConn), payloadCopy, false, ttl}, nil
 	}
 
 	isIPv6 := dst.Addr().Is6()
@@ -248,8 +249,10 @@ func OverwriteDial1(dst netip.AddrPort, maxTTL int, payload []byte) (*OverwriteC
 		return nil, err
 	}
 	SetTCPKeepAlive(tcpConn, 5, 120, 1)
+	conn2 := utils.TCPConnToMyTCPConn(tcpConn)
+
 	ttl = GetTTLProbeResult(udpConn, dst.Addr(), basePort, maxTTL)
 	log.Printf("traceroute result: %d for %v", ttl, dst.Addr())
 	cache.PutHops(dst.Addr(), ttl)
-	return &OverwriteConn{tcpConn, payloadCopy, false, ttl}, nil
+	return &OverwriteConn{conn2, payloadCopy, false, ttl}, nil
 }

@@ -10,7 +10,9 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"io"
 	"localhost/aegis/dialers"
+	"localhost/aegis/dns"
 	mystack "localhost/aegis/stack"
+	"localhost/aegis/utils"
 	"log"
 	"net"
 	"net/netip"
@@ -23,7 +25,7 @@ type Haha struct {
 	Stack        *stack.Stack
 	TCPForwarder *tcp.Forwarder
 	UDPNAT       *mystack.NAT
-	DNSProxy     DNSProxy
+	DNSProxy     dns.DNSProxy
 	UDPForwarder *udp.Forwarder
 	LogWriter    io.Writer
 	StatusCode   int8
@@ -58,14 +60,21 @@ func dialTCP(dstIP tcpip.Address, dstPort uint16) (mystack.TCPLike, error) {
 		IP:   dstIP.AsSlice(),
 		Port: int(dstPort),
 	}
-	conn, err := net.DialTCP("tcp", nil, &dst)
-	if err == nil {
-		dialers.SetTCPKeepAlive(conn, 5, 120, 1)
+	tcpConn, err := net.DialTCP("tcp", nil, &dst)
+	if err != nil {
+		return nil, err
 	}
-	return conn, err
+	dialers.SetTCPKeepAlive(tcpConn, 5, 120, 1)
+	conn2 := utils.TCPConnToMyTCPConn(tcpConn)
+	return &conn2, nil
 }
-func listenUDP(network string, laddr *net.UDPAddr) (net.PacketConn, error) {
-	return net.ListenUDP(network, laddr)
+func listenUDP(network string, laddr *net.UDPAddr) (mystack.UDPLike, error) {
+	udpConn, err := net.ListenUDP(network, laddr)
+	if err != nil {
+		return nil, err
+	}
+	conn2 := utils.UDPConnToMyUDPConn(udpConn)
+	return &conn2, nil
 }
 
 func DryRun(conf string) string {
@@ -129,7 +138,8 @@ func Start(fd int32, conf string) int8 {
 				return nil, err
 			}
 			dialers.SetTCPKeepAlive(tcpConn, 5, 120, 1)
-			return &dialers.TLSFragConn{tcpConn, config.TLSFrag.Size, false}, nil
+			conn2 := utils.TCPConnToMyTCPConn(tcpConn)
+			return &dialers.TLSFragConn{conn2, config.TLSFrag.Size, false}, nil
 		}
 	case "overwrite":
 		payload, err := base64.StdEncoding.DecodeString(config.Overwrite.Payload)
@@ -150,12 +160,21 @@ func Start(fd int32, conf string) int8 {
 		tcpfn = dialTCP
 	}
 
-	tcpHandler := mystack.NewTCPReqHandler(tcpfn)
+	bufPool := sync.Pool{
+		New: func() any {
+			return make([]byte, 65536)
+		},
+	}
+	for i := 0; i < 8; i++ {
+		bufPool.Put(make([]byte, 65536))
+	}
+
+	tcpHandler := mystack.NewTCPReqHandler(tcpfn, &bufPool)
 	state1.TCPForwarder = tcp.NewForwarder(state1.Stack, 0, 10000, tcpHandler)
 	state1.Stack.SetTransportProtocolHandler(tcp.ProtocolNumber, state1.TCPForwarder.HandlePacket)
 
 	dialer := net.Dialer{}
-	var dialContextFn1 DialContextFn
+	var dialContextFn1 dns.DialContextFn
 	switch config.Strategy {
 	case "overwrite":
 		payload, err := base64.StdEncoding.DecodeString(config.Overwrite.Payload)
@@ -186,7 +205,8 @@ func Start(fd int32, conf string) int8 {
 			}
 			tcpConn := conn.(*net.TCPConn)
 			dialers.SetTCPKeepAlive(tcpConn, 5, 120, 1)
-			return &dialers.TLSFragConn{tcpConn, config.TLSFrag.Size, false}, nil
+			conn2 := utils.TCPConnToMyTCPConn(tcpConn)
+			return &dialers.TLSFragConn{conn2, config.TLSFrag.Size, false}, nil
 		}
 	}
 	dialContextFn2 := func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -197,9 +217,9 @@ func Start(fd int32, conf string) int8 {
 			return dialer.DialContext(ctx, network, addr)
 		}
 	}
-	state1.DNSProxy = NewDNSProxy(dialContextFn2, config.DoHURL, config.DoHIP)
+	state1.DNSProxy = dns.NewDNSProxy(dialContextFn2, config.DoHURL, config.DoHIP)
 
-	state1.UDPNAT = mystack.NewUDPNAT()
+	state1.UDPNAT = mystack.NewUDPNAT(&bufPool)
 	linkEP, err := mystack.NewLinkEP(fd, uint32(config.MTU))
 	if err != nil {
 		return status
@@ -208,7 +228,7 @@ func Start(fd int32, conf string) int8 {
 	state1.UDPForwarder = udp.NewForwarder(state1.Stack, udpHandler)
 	state1.Stack.SetTransportProtocolHandler(udp.ProtocolNumber, state1.UDPForwarder.HandlePacket)
 
-	mystack.DropICMP(state1.Stack)
+	mystack.DropICMP(state1.Stack, &mystack.ICMPHackTarget{})
 
 	err = mystack.CreateNIC(state1.Stack, 1, linkEP)
 	if err != nil {
@@ -234,7 +254,7 @@ func Stop() {
 	state1.Stack.Destroy()
 	state1.TCPForwarder = nil
 	state1.UDPForwarder = nil
-	state1.DNSProxy = DNSProxy{}
+	state1.DNSProxy = dns.DNSProxy{}
 	state1.UDPNAT = nil
 
 	state1.StatusCode = StatusStop
