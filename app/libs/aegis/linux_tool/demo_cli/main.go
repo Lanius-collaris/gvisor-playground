@@ -168,7 +168,8 @@ func demo(targetPid int, tunName string, config *Config) {
 	udpForwarder := udp.NewForwarder(netStack, udpHandler)
 	netStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
 
-	stack.DropICMP(netStack, &stack.ICMPHackTarget{})
+	icmpHack := stack.NewICMPHackTarget(linkEP, &bufPool, stack.DNSTimeout)
+	stack.DropICMP(netStack, &icmpHack)
 
 	err = stack.CreateNIC(netStack, 1, linkEP)
 	p(err)

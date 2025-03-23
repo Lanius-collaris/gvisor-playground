@@ -228,7 +228,8 @@ func Start(fd int32, conf string) int8 {
 	state1.UDPForwarder = udp.NewForwarder(state1.Stack, udpHandler)
 	state1.Stack.SetTransportProtocolHandler(udp.ProtocolNumber, state1.UDPForwarder.HandlePacket)
 
-	mystack.DropICMP(state1.Stack, &mystack.ICMPHackTarget{})
+	icmpHack := mystack.NewICMPHackTarget(linkEP, &bufPool, mystack.DNSTimeout)
+	mystack.DropICMP(state1.Stack, &icmpHack)
 
 	err = mystack.CreateNIC(state1.Stack, 1, linkEP)
 	if err != nil {

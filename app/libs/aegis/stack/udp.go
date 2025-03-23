@@ -53,12 +53,12 @@ func NewUDPNAT(bufPool *sync.Pool) *NAT {
 type ListenUDPFn func(network string, laddr *net.UDPAddr) (UDPLike, error)
 type HijackDNSFn func(packet []byte, conn net.Conn, wg *sync.WaitGroup)
 
-func UDP6Checksum(srcIP []byte, dstIP []byte, p []byte) uint16 {
+func L4OverIPv6Checksum(proto uint8, srcIP []byte, dstIP []byte, p []byte) uint16 {
 	var pseudoHeader [40]byte
 	copy(pseudoHeader[:16], srcIP)
 	copy(pseudoHeader[16:32], dstIP)
 	binary.BigEndian.PutUint32(pseudoHeader[32:], uint32(len(p)))
-	pseudoHeader[39] = 17
+	pseudoHeader[39] = proto
 
 	t := utils.Uint16Sum(pseudoHeader[:]) + utils.Uint16Sum(p)
 	return 0xffff - uint16(utils.ClearHigh16(t))
@@ -104,7 +104,7 @@ func mySendUDP6(ep stack.LinkWriter, data []byte, src *syscall.SockaddrInet6, ds
 	iph.SetDestinationAddress(dst.IP)
 
 	udph := AddUDPHeader(ref1[40:], uint16(src.Port), dst.Port)
-	chksum := UDP6Checksum(src.Addr[:], dst.IP.AsSlice(), ref1[40:])
+	chksum := L4OverIPv6Checksum(17, src.Addr[:], dst.IP.AsSlice(), ref1[40:])
 	udph.SetChecksum(chksum)
 	return writeView(ep, view)
 }
@@ -180,6 +180,7 @@ out1:
 
 		if !state.Conn.IsReadable(deadline) {
 			log.Printf("wait for readable events: timeout")
+			break
 		}
 	}
 
