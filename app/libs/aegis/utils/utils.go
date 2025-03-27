@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
@@ -69,10 +68,22 @@ func GenFDCmsg(fds []uint32) []byte {
 	}
 	return cmsg
 }
+func CmsgAddHopLimit(buf []byte, hopLimit uint8) {
+	binary.NativeEndian.PutUint64(buf, 20)
+	binary.NativeEndian.PutUint32(buf[8:], syscall.SOL_IPV6)
+	binary.NativeEndian.PutUint32(buf[12:], syscall.IPV6_HOPLIMIT)
+	binary.NativeEndian.PutUint32(buf[16:], uint32(hopLimit))
+}
+func CmsgAddTTL(buf []byte, ttl uint8) {
+	binary.NativeEndian.PutUint64(buf, 20)
+	binary.NativeEndian.PutUint32(buf[8:], syscall.SOL_IP)
+	binary.NativeEndian.PutUint32(buf[12:], syscall.IP_TTL)
+	binary.NativeEndian.PutUint32(buf[16:], uint32(ttl))
+}
 
-func IsReadable(raw syscall.RawConn, deadline time.Time) bool {
+func IsReadable(raw syscall.RawConn) error {
 	t := 0
-	raw.Read(func(fd uintptr) bool {
+	return raw.Read(func(fd uintptr) bool {
 		if t == 0 {
 			t += 1
 			return false
@@ -80,11 +91,6 @@ func IsReadable(raw syscall.RawConn, deadline time.Time) bool {
 			return true
 		}
 	})
-	if time.Now().Sub(deadline) < 0 {
-		return true
-	} else {
-		return false
-	}
 }
 
 type MyTCPConn struct {
@@ -96,8 +102,8 @@ func TCPConnToMyTCPConn(tcpConn *net.TCPConn) MyTCPConn {
 	raw, _ := tcpConn.SyscallConn()
 	return MyTCPConn{tcpConn, raw}
 }
-func (conn *MyTCPConn) IsReadable(deadline time.Time) bool {
-	return IsReadable(conn.Raw, deadline)
+func (conn *MyTCPConn) IsReadable() error {
+	return IsReadable(conn.Raw)
 }
 func (conn *MyTCPConn) Recvmsg(buf []byte, cmsgBuf []byte, flags int) (n, cmsgLen int, recvflags int, from syscall.Sockaddr, err error) {
 	conn.Raw.Control(func(t uintptr) {
@@ -139,14 +145,17 @@ func FdToUDPConn(fd int) MyUDPConn {
 	conn, _ := net.FilePacketConn(os.NewFile(uintptr(fd), ""))
 	return UDPConnToMyUDPConn(conn.(*net.UDPConn))
 }
-func (conn *MyUDPConn) IsReadable(deadline time.Time) bool {
-	return IsReadable(conn.Raw, deadline)
+func (conn *MyUDPConn) IsReadable() error {
+	return IsReadable(conn.Raw)
 }
 func (conn *MyUDPConn) Recvmsg(buf []byte, cmsgBuf []byte, flags int) (n, cmsgLen int, recvflags int, from syscall.Sockaddr, err error) {
 	conn.Raw.Control(func(t uintptr) {
 		n, cmsgLen, recvflags, from, err = syscall.Recvmsg(int(t), buf, cmsgBuf, flags)
 	})
 	return
+}
+func (conn *MyUDPConn) Control(fn func(fd uintptr)) error {
+	return conn.Raw.Control(fn)
 }
 
 func ClearHigh16(n uint32) uint32 {

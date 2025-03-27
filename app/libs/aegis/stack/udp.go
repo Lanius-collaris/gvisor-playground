@@ -26,7 +26,7 @@ type IPPort struct {
 }
 type UDPLike interface {
 	net.Conn
-	IsReadable(deadline time.Time) bool
+	IsReadable() error
 	Recvmsg(buf []byte, cmsgBuf []byte, flags int) (n, cmsgLen int, recvflags int, from syscall.Sockaddr, err error)
 	WriteMsgUDP(b []byte, cmsg []byte, addr *net.UDPAddr) (n, cmsgN int, err error)
 }
@@ -178,8 +178,9 @@ out1:
 		}
 		nat.BufPool.Put(buf)
 
-		if !state.Conn.IsReadable(deadline) {
-			log.Printf("wait for readable events: timeout")
+		err := state.Conn.IsReadable()
+		if err!=nil{
+			log.Printf("wait for readable events: %v",err)
 			break
 		}
 	}
@@ -208,6 +209,11 @@ func NewUDPReqHandler(
 		if gErr != nil {
 			log.Printf("failed to create endpoint: %v", gErr)
 			return
+		}
+		if isIPv6{
+			ep.SocketOptions().SetReceiveHopLimit(true)
+		}else{
+			ep.SocketOptions().SetReceiveTTL(true)
 		}
 		xConn := gonet.NewUDPConn(s, &wq, ep)
 
@@ -263,6 +269,7 @@ func NewUDPReqHandler(
 			wq.EventRegister(&waitEntry)
 			defer wq.EventUnregister(&waitEntry)
 
+			var cmsg [20]byte
 		out1:
 			for {
 				buf := nat.BufPool.Get().([]byte)
@@ -292,7 +299,12 @@ func NewUDPReqHandler(
 						continue
 					}
 
-					_, _, err = state.Conn.WriteMsgUDP(buf[:res.Count], nil, &dst)
+					if isIPv6{
+						utils.CmsgAddHopLimit(cmsg[:],res.ControlMessages.HopLimit)
+					}else{
+						utils.CmsgAddTTL(cmsg[:],res.ControlMessages.TTL)
+					}
+					_, _, err = state.Conn.WriteMsgUDP(buf[:res.Count], cmsg[:], &dst)
 					if err != nil {
 						nat.BufPool.Put(buf)
 						log.Printf("failed to send data: %v", err)

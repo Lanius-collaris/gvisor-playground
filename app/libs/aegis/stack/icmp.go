@@ -107,7 +107,10 @@ func (t *ICMPHackTarget) Action(pkt *stack.PacketBuffer, hook stack.Hook, r *sta
 		return stack.RuleDrop, 0
 	}
 
-	var src IPPort
+	var (
+		src IPPort
+		cmsg [20]byte
+	)
 	if isIPv6 {
 		if len(networkH) < 40 {
 			return stack.RuleDrop, 0
@@ -116,6 +119,7 @@ func (t *ICMPHackTarget) Action(pkt *stack.PacketBuffer, hook stack.Hook, r *sta
 			return stack.RuleDrop, 0
 		}
 		ip6h := header.IPv6(networkH)
+		utils.CmsgAddHopLimit(cmsg[:],ip6h.HopLimit())
 		src.IP = ip6h.SourceAddress()
 		icmp6h := header.ICMPv6(transportH)
 		src.Port = icmp6h.Ident()
@@ -127,6 +131,7 @@ func (t *ICMPHackTarget) Action(pkt *stack.PacketBuffer, hook stack.Hook, r *sta
 			return stack.RuleDrop, 0
 		}
 		ip4h := header.IPv4(networkH)
+		utils.CmsgAddTTL(cmsg[:],ip4h.TTL())
 		src.IP = ip4h.SourceAddress()
 		icmp4h := header.ICMPv4(transportH)
 		src.Port = icmp4h.Ident()
@@ -193,7 +198,7 @@ func (t *ICMPHackTarget) Action(pkt *stack.PacketBuffer, hook stack.Hook, r *sta
 	state.LastSend = now1
 	state.Unlock()
 
-	_, _, err = state.Conn.WriteMsgUDP(msg, nil, &dst)
+	_, _, err = state.Conn.WriteMsgUDP(msg, cmsg[:], &dst)
 	if err != nil {
 		log.Printf("failed to send data: %v", err)
 	}
@@ -261,8 +266,9 @@ out1:
 			}
 		}
 
-		if !state.Conn.IsReadable(deadline) {
-			log.Printf("wait for readable events: timeout")
+		err := state.Conn.IsReadable()
+		if err!=nil{
+			log.Printf("wait for readable events: %v",err)
 			break
 		}
 	}

@@ -9,12 +9,11 @@ import (
 	"net"
 	"sync"
 	"syscall"
-	"time"
 )
 
 type TCPLike interface {
 	net.Conn
-	IsReadable(deadline time.Time) bool
+	IsReadable() error
 	Recvmsg(buf []byte, cmsgBuf []byte, flags int) (n, cmsgLen int, recvflags int, from syscall.Sockaddr, err error)
 	GetsockoptInt(level int, opt int) (int, error)
 	CloseRead() error
@@ -73,7 +72,7 @@ out1:
 		}
 		bufPool.Put(buf)
 
-		input.IsReadable(time.Now().Add(2400 * time.Hour))
+		input.IsReadable()
 	}
 }
 func ForwardOutboundTCP(input tcpip.Endpoint, readableCh <-chan struct{}, output TCPLike, bufPool *sync.Pool) {
