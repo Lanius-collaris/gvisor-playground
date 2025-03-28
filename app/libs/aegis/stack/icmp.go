@@ -51,7 +51,7 @@ func LookICMPPacket(pkt *stack.PacketBuffer) {
 	}
 }
 
-func mySendICMPv6(ep stack.LinkWriter, data []byte, src *syscall.SockaddrInet6, dst IPPort, hopLimit uint8) (int, tcpip.Error) {
+func mySendICMPv6(ep stack.LinkWriter, data []byte, src []byte, dst []byte, hopLimit uint8) (int, tcpip.Error) {
 	view := buffer.NewViewSize(40 + len(data))
 	ref1 := view.AsSlice()
 	copy(ref1[40:], data)
@@ -61,15 +61,15 @@ func mySendICMPv6(ep stack.LinkWriter, data []byte, src *syscall.SockaddrInet6, 
 	iph.SetPayloadLength(uint16(len(data)))
 	iph.SetNextHeader(0x3a)
 	iph.SetHopLimit(hopLimit)
-	copy(iph[8:24], src.Addr[:])
-	iph.SetDestinationAddress(dst.IP)
+	copy(iph[8:24], src)
+	copy(iph[24:40], dst)
 
 	icmph := header.ICMPv6(ref1[40:48])
-	chksum := L4OverIPv6Checksum(0x3a, src.Addr[:], dst.IP.AsSlice(), ref1[40:])
+	chksum := L4OverIPv6Checksum(0x3a, src, dst, ref1[40:])
 	icmph.SetChecksum(chksum)
 	return writeView(ep, view)
 }
-func mySendICMPv4(ep stack.LinkWriter, data []byte, src *syscall.SockaddrInet4, dst IPPort, ttl uint8) (int, tcpip.Error) {
+func mySendICMPv4(ep stack.LinkWriter, data []byte, src []byte, dst []byte, ttl uint8) (int, tcpip.Error) {
 	view := buffer.NewViewSize(20 + len(data))
 	ref1 := view.AsSlice()
 	copy(ref1[20:], data)
@@ -79,8 +79,8 @@ func mySendICMPv4(ep stack.LinkWriter, data []byte, src *syscall.SockaddrInet4, 
 	iph.SetTotalLength(uint16(20 + len(data)))
 	iph.SetTTL(ttl)
 	iph[9] = 1
-	copy(iph[12:16], src.Addr[:])
-	iph.SetDestinationAddress(dst.IP)
+	copy(iph[12:16], src)
+	copy(iph[16:20], dst)
 	chksum := 0xffff - uint16(utils.ClearHigh16(utils.Uint16Sum(iph)))
 	iph.SetChecksum(chksum)
 
@@ -88,6 +88,51 @@ func mySendICMPv4(ep stack.LinkWriter, data []byte, src *syscall.SockaddrInet4, 
 	chksum = 0xffff - uint16(utils.ClearHigh16(utils.Uint16Sum(data)))
 	icmph.SetChecksum(chksum)
 	return writeView(ep, view)
+}
+
+func sendICMPv6Error(
+	ep stack.LinkWriter,
+	proto uint8,
+	data []byte,
+	src []byte,
+	dst []byte,
+	ttl uint8,
+	extra []byte,
+) (int, tcpip.Error) {
+	iph := header.IPv6(data[8:48])
+	copy(iph[:8], IPv6HeaderForUDP[:8])
+	iph.SetPayloadLength(uint16(len(data) - 48))
+	iph.SetNextHeader(proto)
+	copy(iph[8:24], src)
+	copy(iph[24:40], dst)
+
+	copy(data[:2], extra[5:7])
+	icmph := header.ICMPv6(data[:8])
+	icmph.SetMTU(binary.NativeEndian.Uint32(extra[8:]))
+	icmph.SetChecksum(0)
+	return mySendICMPv6(ep, data, extra[24:40], src, ttl)
+}
+func sendICMPv4Error(
+	ep stack.LinkWriter,
+	proto uint8,
+	data []byte,
+	src []byte,
+	dst []byte,
+	ttl uint8,
+	extra []byte,
+) (int, tcpip.Error) {
+	iph := header.IPv4(data[8:28])
+	copy(iph[:12], IPv4HeaderForUDP[:12])
+	iph.SetTotalLength(uint16(len(data) - 8))
+	iph[9] = proto
+	copy(iph[12:16], src)
+	copy(iph[16:20], dst)
+
+	copy(data[:2], extra[5:7])
+	icmph := header.ICMPv4(data[:8])
+	icmph.SetMTU(uint16(binary.NativeEndian.Uint32(extra[8:])))
+	icmph.SetChecksum(0)
+	return mySendICMPv4(ep, data, extra[20:24], src, ttl)
 }
 
 type ICMPHackTarget struct {
@@ -108,7 +153,7 @@ func (t *ICMPHackTarget) Action(pkt *stack.PacketBuffer, hook stack.Hook, r *sta
 	}
 
 	var (
-		src IPPort
+		src  IPPort
 		cmsg [20]byte
 	)
 	if isIPv6 {
@@ -119,7 +164,7 @@ func (t *ICMPHackTarget) Action(pkt *stack.PacketBuffer, hook stack.Hook, r *sta
 			return stack.RuleDrop, 0
 		}
 		ip6h := header.IPv6(networkH)
-		utils.CmsgAddHopLimit(cmsg[:],ip6h.HopLimit())
+		utils.CmsgAddHopLimit(cmsg[:], ip6h.HopLimit())
 		src.IP = ip6h.SourceAddress()
 		icmp6h := header.ICMPv6(transportH)
 		src.Port = icmp6h.Ident()
@@ -131,7 +176,7 @@ func (t *ICMPHackTarget) Action(pkt *stack.PacketBuffer, hook stack.Hook, r *sta
 			return stack.RuleDrop, 0
 		}
 		ip4h := header.IPv4(networkH)
-		utils.CmsgAddTTL(cmsg[:],ip4h.TTL())
+		utils.CmsgAddTTL(cmsg[:], ip4h.TTL())
 		src.IP = ip4h.SourceAddress()
 		icmp4h := header.ICMPv4(transportH)
 		src.Port = icmp4h.Ident()
@@ -165,8 +210,10 @@ func (t *ICMPHackTarget) Action(pkt *stack.PacketBuffer, hook stack.Hook, r *sta
 			return stack.RuleDrop, 0
 		}
 		if isIPv6 {
+			syscall.SetsockoptInt(sockFD, syscall.SOL_IPV6, syscall.IPV6_RECVERR, 1)
 			syscall.SetsockoptInt(sockFD, syscall.SOL_IPV6, syscall.IPV6_RECVHOPLIMIT, 1)
 		} else {
+			syscall.SetsockoptInt(sockFD, syscall.SOL_IP, syscall.IP_RECVERR, 1)
 			syscall.SetsockoptInt(sockFD, syscall.SOL_IP, syscall.IP_RECVTTL, 1)
 		}
 
@@ -230,6 +277,80 @@ out1:
 
 		buf := nat.BufPool.Get().([]byte)
 		var cmsgBuf [256]byte
+
+		//drain the socket error queue
+		var offset1 int
+		if isIPv6 {
+			offset1 = 48
+		} else {
+			offset1 = 28
+		}
+		for {
+			n, cmsgLen, _, from, err := state.Conn.Recvmsg(buf[offset1:], cmsgBuf[:], syscall.MSG_ERRQUEUE)
+			if err != nil {
+				break
+			}
+			cmsgs, err := syscall.ParseSocketControlMessage(cmsgBuf[:cmsgLen])
+			if err != nil {
+				break
+			}
+			var (
+				sendICMP = false
+				extErr   []byte
+				ttl      uint8 = 64
+			)
+			for _, cmsg := range cmsgs {
+				if isIPv6 {
+					if cmsg.Header.Level == syscall.SOL_IPV6 && cmsg.Header.Type == syscall.IPV6_RECVERR {
+						if len(cmsg.Data) < 40 {
+							break
+						}
+						if cmsg.Data[4] == utils.SO_EE_ORIGIN_ICMP6 {
+							sendICMP = true
+							extErr = cmsg.Data
+						}
+					}
+					if cmsg.Header.Level == syscall.SOL_IPV6 && cmsg.Header.Type == syscall.IPV6_HOPLIMIT {
+						if len(cmsg.Data) < 4 {
+							break
+						}
+						ttl = uint8(binary.NativeEndian.Uint32(cmsg.Data))
+					}
+				} else {
+					if cmsg.Header.Level == syscall.SOL_IP && cmsg.Header.Type == syscall.IP_RECVERR {
+						if len(cmsg.Data) < 24 {
+							break
+						}
+						if cmsg.Data[4] == utils.SO_EE_ORIGIN_ICMP {
+							sendICMP = true
+							extErr = cmsg.Data
+						}
+					}
+					if cmsg.Header.Level == syscall.SOL_IP && cmsg.Header.Type == syscall.IP_TTL {
+						if len(cmsg.Data) < 4 {
+							break
+						}
+						ttl = uint8(binary.NativeEndian.Uint32(cmsg.Data))
+					}
+				}
+			}
+			if sendICMP && n >= 8 {
+				icmph := header.ICMPv6(buf[offset1 : offset1+8])
+				icmph.SetIdent(dst.Port)
+				var gErr tcpip.Error
+				if isIPv6 {
+					_, gErr = sendICMPv6Error(ep, 0x3a, buf[:offset1+n], dst.IP.AsSlice(), from.(*syscall.SockaddrInet6).Addr[:], ttl, extErr)
+				} else {
+					_, gErr = sendICMPv4Error(ep, 1, buf[:offset1+n], dst.IP.AsSlice(), from.(*syscall.SockaddrInet4).Addr[:], ttl, extErr)
+				}
+				if gErr != nil {
+					nat.BufPool.Put(buf)
+					log.Printf("failed to WritePackets: %v", gErr)
+					break out1
+				}
+			}
+		}
+
 	in_data:
 		for {
 			n, cmsgLen, _, from, err := state.Conn.Recvmsg(buf, cmsgBuf[:], 0)
@@ -255,9 +376,9 @@ out1:
 
 			var gErr tcpip.Error
 			if isIPv6 {
-				_, gErr = mySendICMPv6(ep, buf[:n], from.(*syscall.SockaddrInet6), dst, ttl)
+				_, gErr = mySendICMPv6(ep, buf[:n], from.(*syscall.SockaddrInet6).Addr[:], dst.IP.AsSlice(), ttl)
 			} else {
-				_, gErr = mySendICMPv4(ep, buf[:n], from.(*syscall.SockaddrInet4), dst, ttl)
+				_, gErr = mySendICMPv4(ep, buf[:n], from.(*syscall.SockaddrInet4).Addr[:], dst.IP.AsSlice(), ttl)
 			}
 			if gErr != nil {
 				nat.BufPool.Put(buf)
@@ -265,10 +386,11 @@ out1:
 				break out1
 			}
 		}
+		nat.BufPool.Put(buf)
 
 		err := state.Conn.IsReadable()
-		if err!=nil{
-			log.Printf("wait for readable events: %v",err)
+		if err != nil {
+			log.Printf("wait for readable events: %v", err)
 			break
 		}
 	}

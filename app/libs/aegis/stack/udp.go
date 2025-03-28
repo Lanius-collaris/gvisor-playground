@@ -27,6 +27,7 @@ type IPPort struct {
 type UDPLike interface {
 	net.Conn
 	IsReadable() error
+	Control(func(fd uintptr)) error
 	Recvmsg(buf []byte, cmsgBuf []byte, flags int) (n, cmsgLen int, recvflags int, from syscall.Sockaddr, err error)
 	WriteMsgUDP(b []byte, cmsg []byte, addr *net.UDPAddr) (n, cmsgN int, err error)
 }
@@ -150,6 +151,85 @@ out1:
 		state.Conn.SetReadDeadline(deadline)
 
 		buf := nat.BufPool.Get().([]byte)
+		var cmsgBuf [256]byte
+
+		//drain the socket error queue
+		var offset1 int
+		if isIPv6 {
+			offset1 = 56
+		} else {
+			offset1 = 36
+		}
+		for {
+			n, cmsgLen, _, from, err := state.Conn.Recvmsg(buf[offset1:], cmsgBuf[:], syscall.MSG_ERRQUEUE)
+			if err != nil {
+				break
+			}
+			cmsgs, err := syscall.ParseSocketControlMessage(cmsgBuf[:cmsgLen])
+			if err != nil {
+				break
+			}
+			var (
+				sendICMP = false
+				extErr   []byte
+				ttl      uint8 = 64
+			)
+			for _, cmsg := range cmsgs {
+				if isIPv6 {
+					if cmsg.Header.Level == syscall.SOL_IPV6 && cmsg.Header.Type == syscall.IPV6_RECVERR {
+						if len(cmsg.Data) < 40 {
+							break
+						}
+						if cmsg.Data[4] == utils.SO_EE_ORIGIN_ICMP6 {
+							sendICMP = true
+							extErr = cmsg.Data
+						}
+					}
+					if cmsg.Header.Level == syscall.SOL_IPV6 && cmsg.Header.Type == syscall.IPV6_HOPLIMIT {
+						if len(cmsg.Data) < 4 {
+							break
+						}
+						ttl = uint8(binary.NativeEndian.Uint32(cmsg.Data))
+					}
+				} else {
+					if cmsg.Header.Level == syscall.SOL_IP && cmsg.Header.Type == syscall.IP_RECVERR {
+						if len(cmsg.Data) < 24 {
+							break
+						}
+						if cmsg.Data[4] == utils.SO_EE_ORIGIN_ICMP {
+							sendICMP = true
+							extErr = cmsg.Data
+						}
+					}
+					if cmsg.Header.Level == syscall.SOL_IP && cmsg.Header.Type == syscall.IP_TTL {
+						if len(cmsg.Data) < 4 {
+							break
+						}
+						ttl = uint8(binary.NativeEndian.Uint32(cmsg.Data))
+					}
+				}
+			}
+			if sendICMP {
+				var gErr tcpip.Error
+				if isIPv6 {
+					from2 := from.(*syscall.SockaddrInet6)
+					udph := AddUDPHeader(buf[offset1-8:], dst.Port, uint16(from2.Port))
+					udph.SetChecksum(0)
+					_, gErr = sendICMPv6Error(ep, 17, buf[:offset1+n], dst.IP.AsSlice(), from2.Addr[:], ttl, extErr)
+				} else {
+					from2 := from.(*syscall.SockaddrInet4)
+					udph := AddUDPHeader(buf[offset1-8:], dst.Port, uint16(from2.Port))
+					udph.SetChecksum(0)
+					_, gErr = sendICMPv4Error(ep, 17, buf[:offset1+n], dst.IP.AsSlice(), from2.Addr[:], ttl, extErr)
+				}
+				if gErr != nil {
+					nat.BufPool.Put(buf)
+					log.Printf("failed to WritePackets: %v", gErr)
+					break out1
+				}
+			}
+		}
+
 	in1:
 		for {
 			n, _, _, from, err := state.Conn.Recvmsg(buf, nil, 0)
@@ -179,8 +259,8 @@ out1:
 		nat.BufPool.Put(buf)
 
 		err := state.Conn.IsReadable()
-		if err!=nil{
-			log.Printf("wait for readable events: %v",err)
+		if err != nil {
+			log.Printf("wait for readable events: %v", err)
 			break
 		}
 	}
@@ -210,9 +290,9 @@ func NewUDPReqHandler(
 			log.Printf("failed to create endpoint: %v", gErr)
 			return
 		}
-		if isIPv6{
+		if isIPv6 {
 			ep.SocketOptions().SetReceiveHopLimit(true)
-		}else{
+		} else {
 			ep.SocketOptions().SetReceiveTTL(true)
 		}
 		xConn := gonet.NewUDPConn(s, &wq, ep)
@@ -242,6 +322,16 @@ func NewUDPReqHandler(
 				log.Printf("failed to listen UDP: %v", err)
 				return
 			}
+			rConn.Control(func(t uintptr) {
+				fd := int(t)
+				if isIPv6 {
+					syscall.SetsockoptInt(fd, syscall.SOL_IPV6, syscall.IPV6_RECVERR, 1)
+					syscall.SetsockoptInt(fd, syscall.SOL_IPV6, syscall.IPV6_RECVHOPLIMIT, 1)
+				} else {
+					syscall.SetsockoptInt(fd, syscall.SOL_IP, syscall.IP_RECVERR, 1)
+					syscall.SetsockoptInt(fd, syscall.SOL_IP, syscall.IP_RECVTTL, 1)
+				}
+			})
 
 			state = &UDPConnState{LastSend: time.Now(), Conn: rConn}
 			go ForwardInboundUDP(linkEP, nat, src, state, timeout2)
@@ -299,10 +389,10 @@ func NewUDPReqHandler(
 						continue
 					}
 
-					if isIPv6{
-						utils.CmsgAddHopLimit(cmsg[:],res.ControlMessages.HopLimit)
-					}else{
-						utils.CmsgAddTTL(cmsg[:],res.ControlMessages.TTL)
+					if isIPv6 {
+						utils.CmsgAddHopLimit(cmsg[:], res.ControlMessages.HopLimit)
+					} else {
+						utils.CmsgAddTTL(cmsg[:], res.ControlMessages.TTL)
 					}
 					_, _, err = state.Conn.WriteMsgUDP(buf[:res.Count], cmsg[:], &dst)
 					if err != nil {
